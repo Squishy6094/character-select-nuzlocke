@@ -292,7 +292,7 @@ local function update()
         isDying = false
     end
 
-    if not block_menu_in_stages() then
+    if not block_menu_in_stages() and not is_game_paused() then
         for i = 1, spawnSparkles do
             local angle = 0x10000*(i/spawnSparkles) + math.s16(get_global_timer()*0x200)
             local x = spawnPos.x + sins(angle)*spawnRadius
