@@ -107,8 +107,11 @@ local function update_save(reset, seed)
 end
 update_save()
 
+local spawnPos = {x = 0, y = 0, z = 0}
+local spawnRadius = 700
+local spawnSparkles = 6
 local function block_menu_in_stages()
-    return gNetworkPlayers[0].currCourseNum == 0
+    return gNetworkPlayers[0].currCourseNum == 0 or vec3f_dist(gMarioStates[0].pos, spawnPos) < spawnRadius, "Must be Near Spawn or in Castle"
 end
 
 local function nuzlocke_seed_rng(offset)
@@ -287,6 +290,18 @@ local function update()
         end
     else
         isDying = false
+    end
+
+    if not block_menu_in_stages() then
+        for i = 1, spawnSparkles do
+            local angle = 0x10000*(i/spawnSparkles) + math.s16(get_global_timer()*0x200)
+            local x = spawnPos.x + sins(angle)*spawnRadius
+            local z = spawnPos.z + coss(angle)*spawnRadius
+            local floorHeight = find_floor(x, spawnPos.y + 500, z)
+            spawn_non_sync_object(id_bhvSparkleSpawn, E_MODEL_NONE, x, floorHeight, z, function(oSparkle)
+                oSparkle.oVelY = 30
+            end)
+        end
     end
 
     --[[
@@ -842,6 +857,11 @@ local function on_sync()
     instantWarps[1] = nil
     instantWarps[2] = nil
     instantWarps[3] = nil
+    local m = gMarioStates[0] ---@type MarioState
+    local floorHeight = find_floor(m.spawnInfo.startPos.x, m.spawnInfo.startPos.y, m.spawnInfo.startPos.z)
+    spawnPos.x = m.spawnInfo.startPos.x
+    spawnPos.y = floorHeight
+    spawnPos.z = m.spawnInfo.startPos.z
 end
 
 local function set_lives_counter()
