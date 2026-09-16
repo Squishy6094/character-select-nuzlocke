@@ -111,7 +111,11 @@ local spawnPos = {x = 0, y = 0, z = 0}
 local spawnRadius = 700
 local spawnSparkles = 6
 local function block_menu_in_stages()
-    return gNetworkPlayers[0].currCourseNum == 0 or vec3f_dist(gMarioStates[0].pos, spawnPos) < spawnRadius, "Must be Near Spawn or in Castle"
+    if gGlobalSyncTable.nuzMixupMode == 0 then
+        return gNetworkPlayers[0].currCourseNum == 0 or vec3f_dist(gMarioStates[0].pos, spawnPos) < spawnRadius, "Must be Near Spawn or in Castle"
+    else
+        return gNetworkPlayers[0].currCourseNum == 0, "Must be in Castle"
+    end
 end
 
 local function nuzlocke_seed_rng(offset)
@@ -292,14 +296,14 @@ local function update()
         isDying = false
     end
 
-    if not block_menu_in_stages() and not is_game_paused() then
+    if gGlobalSyncTable.nuzMixupMode == 0 and not block_menu_in_stages() and not is_game_paused() then
         for i = 1, spawnSparkles do
             local angle = 0x10000*(i/spawnSparkles) + math.s16(get_global_timer()*0x200)
             local x = spawnPos.x + sins(angle)*spawnRadius
             local z = spawnPos.z + coss(angle)*spawnRadius
             local floorHeight = find_floor(x, spawnPos.y + 500, z)
-            spawn_non_sync_object(id_bhvSparkleSpawn, E_MODEL_NONE, x, floorHeight, z, function(oSparkle)
-                oSparkle.oVelY = 30
+            spawn_non_sync_object(id_bhvSparkleSpawn, E_MODEL_NONE, x, spawnPos.y, z, function(oSparkle)
+                
             end)
         end
     end
@@ -627,8 +631,10 @@ local function find_level_bounds()
     return math.sqrt(levelMinX^2 + levelMaxX^2 + levelMinZ^2 + levelMaxZ^2)
 end
 
+local surfaceList = {}
 ---@param surface Surface
 local function find_instant_warps(surface, dynamic)
+    if dynamic then return end
     local index = surface.type - SURFACE_INSTANT_WARP_1B;
     if (index >= INSTANT_WARP_INDEX_START and index < INSTANT_WARP_INDEX_STOP) and not instantWarps[index] then
         local warp = get_instant_warp(index)
@@ -642,47 +648,79 @@ local function find_instant_warps(surface, dynamic)
             }
         end
     end
+
+    local surfaceX = (surface.vertex1.x + surface.vertex2.x + surface.vertex3.x)/3
+    local surfaceY = (surface.vertex1.y + surface.vertex2.y + surface.vertex3.y)/3
+    local surfaceZ = (surface.vertex1.z + surface.vertex2.z + surface.vertex3.z)/3
+
+    local smallestEdge = nil
+    for i = 0, 6 do
+        local currNum = (i%3) + 1
+        local nextNum = ((i+1)%3) + 1
+        local currPos = surface["vertex"..tostring(currNum)]
+        local nextPos = surface["vertex"..tostring(nextNum)]
+        if i > 2 then
+            local nextNum2 = ((i+2)%3) + 1
+            nextPos = {
+                x = (surface["vertex"..tostring(nextNum)].x + surface["vertex"..tostring(nextNum2)].x)*0.5,
+                y = (surface["vertex"..tostring(nextNum)].y + surface["vertex"..tostring(nextNum2)].y)*0.5,
+                z = (surface["vertex"..tostring(nextNum)].z + surface["vertex"..tostring(nextNum2)].z)*0.5,
+            }
+        end
+        local edgeDist = math.sqrt((currPos.x - nextPos.x)^2 + (currPos.y - nextPos.y)^2 + (currPos.z - nextPos.z)^2)
+        if not smallestEdge or smallestEdge > edgeDist then
+            smallestEdge = edgeDist
+        end
+    end
+    
+    if not evilFloorTypes[surface.type] then
+        table.insert(surfaceList, {
+            posX = surfaceX,
+            posY = surfaceY,
+            posZ = surfaceZ,
+            normalX = surface.normal.x,
+            normalY = surface.normal.y,
+            normalZ = surface.normal.z,
+            smallEdge = smallestEdge,
+            type = surface.type,
+            surface = surface
+        })
+    end
+
 end
+
+local avoidBhvs = {
+    id_bhvUnlockableChar,
+    id_bhvWarp,
+    id_bhvDoorWarp,
+    id_bhvWarpPipe,
+    id_bhvCannonBarrel,
+}
 
 local function find_character_spawn()
     local spawnPos = nil
     local spawnStart = get_time()
     local spawnIteration = 0
+    djui_chat_message_create(tostring(#surfaceList))
     while spawnPos == nil do
         local spawnStep = 0
         spawnIteration = spawnIteration + 1
-        local ray = collision_find_surface_on_ray(mul_random(levelMinX, levelMaxX), 0x4000, mul_random(levelMinZ, levelMaxZ), 0, -0x8000, 0)
-        while ray.surface and ray.surface.normal.y < 0.5 do
-            ray = collision_find_surface_on_ray(ray.hitPos.x, ray.hitPos.y - 100, ray.hitPos.z, 0, -0x8000, 0)
-        end
-        if ray.surface and not evilFloorTypes[ray.surface.type] and ray.surface.normal.y > 0.95 and (ray.hitPos.y > find_water_level(ray.hitPos.x, ray.hitPos.z) or spawnIteration > 1000) then
+        local surfaceData = surfaceList[mul_random(1, #surfaceList)]
+        if surfaceData and surfaceData.normalY > 0.95 and (find_water_level(surfaceData.posX, surfaceData.posZ) - 100 < surfaceData.posY or spawnIteration > 1000) then
             spawnStep = spawnStep + 1
-            local surfaceX = (ray.surface.vertex1.x + ray.surface.vertex2.x + ray.surface.vertex3.x)/3
-            local surfaceY = (ray.surface.vertex1.y + ray.surface.vertex2.y + ray.surface.vertex3.y)/3
-            local surfaceZ = (ray.surface.vertex1.z + ray.surface.vertex2.z + ray.surface.vertex3.z)/3
 
-            local avoidChar = nearest_object_with_behavior_id_to_pos(surfaceX, surfaceY, surfaceZ, id_bhvUnlockableChar)
-            local avoidWarp = nearest_object_with_behavior_id_to_pos(surfaceX, surfaceY, surfaceZ, id_bhvWarp)
-            local avoidDoorWarp = nearest_object_with_behavior_id_to_pos(surfaceX, surfaceY, surfaceZ, id_bhvDoorWarp)
-            local avoidWarpPipe = nearest_object_with_behavior_id_to_pos(surfaceX, surfaceY, surfaceZ, id_bhvWarpPipe)
-            local avoidCannon = nearest_object_with_behavior_id_to_pos(surfaceX, surfaceY, surfaceZ, id_bhvCannonBarrel)
-
-            local smallestEdge = nil
-            for i = 0, 2 do
-                local currNum = (i%3) + 1
-                local nextNum = ((i+1)%3) + 1
-                local currPos = ray.surface["vertex"..tostring(currNum)]
-                local nextPos = ray.surface["vertex"..tostring(nextNum)]
-                local edgeDist = math.sqrt((currPos.x - nextPos.x)^2 + (currPos.z - nextPos.z)^2)
-                if not smallestEdge or smallestEdge > edgeDist then
-                    smallestEdge = edgeDist
+            local avoidDist = 0x8000
+            for _, bhvId in pairs(avoidBhvs) do
+                local o = nearest_object_with_behavior_id_to_pos(bhvId, surfaceData.posX, surfaceData.posY, surfaceData.posZ)
+                if o then
+                    avoidDist = math.min(avoidDist, dist_between_object_and_point(o, surfaceData.posX, surfaceData.posY, surfaceData.posZ))
                 end
             end
 
             local behindWarp = false
             for i = 0, 3 do
                 if instantWarps[i] then
-                    local angle = atan2s(surfaceZ - instantWarps[i].startZ, surfaceX - instantWarps[i].startX)
+                    local angle = atan2s(surfaceData.posZ - (instantWarps[i].startZ + coss(instantWarps[i].angle)*500), surfaceData.posX - (instantWarps[i].startX + sins(instantWarps[i].angle)*500))
                     local angleDiff = math.s16(angle - instantWarps[i].angle)
                     if angleDiff > -0x6000 and angleDiff < 0x6000 then
                         -- Fine to spawn
@@ -692,18 +730,12 @@ local function find_character_spawn()
                 end
             end
 
-            local avoidDist = math.min(avoidChar and dist_between_object_and_point(avoidChar, surfaceX, surfaceY, surfaceZ) or 0x8000,
-                avoidWarp and dist_between_object_and_point(avoidWarp, surfaceX, surfaceY, surfaceZ) or 0x8000,
-                avoidDoorWarp and dist_between_object_and_point(avoidDoorWarp, surfaceX, surfaceY, surfaceZ) or 0x8000,
-                avoidWarpPipe and dist_between_object_and_point(avoidWarpPipe, surfaceX, surfaceY, surfaceZ) or 0x8000,
-                avoidCannon and dist_between_object_and_point(avoidCannon, surfaceX, surfaceY, surfaceZ) or 0x8000)
-
-            if not behindWarp and (avoidDist > 100 or spawnIteration > 5000) and (smallestEdge > 100 and smallestEdge < (500 + spawnIteration)) then --- math.floor(spawnIteration/100)*100 then
+            if not behindWarp and (avoidDist > 100 or spawnIteration > 5000) and (surfaceData.smallEdge > 100 and surfaceData.smallEdge < (500 + spawnIteration)) then
                 local outofBounds = false
                 for i = 0, 7 do
                     if not outofBounds then
                         local angle = i/8*0x10000
-                        local ray = collision_find_surface_on_ray(surfaceX, surfaceY + 200, surfaceZ, sins(angle)*2000, 0, coss(angle)*2000)
+                        local ray = collision_find_surface_on_ray(surfaceData.posX, surfaceData.posY + 200, surfaceData.posZ, sins(angle)*2000, 0, coss(angle)*2000)
 
                         if ray.surface then
                             local surfaceAngle = atan2s(ray.surface.normal.z, ray.surface.normal.x)
@@ -719,17 +751,17 @@ local function find_character_spawn()
                 if not outofBounds then
                     spawnStep = spawnStep + 1
                     spawnPos = {
-                        x = surfaceX,
-                        y = surfaceY,
-                        z = surfaceZ,
+                        x = surfaceData.posX,
+                        y = surfaceData.posY,
+                        z = surfaceData.posZ,
                         yaw = 0,
                     }
                 end
             end
         end 
 
-        if get_time() - spawnStart > 3 then
-            log_to_console(tostring("Character Select Nuzlocke: Character took 3 Seconds after "..tostring(spawnIteration).." iterations, got stuck on Step "..tostring(spawnStep)..", giving up."), CONSOLE_MESSAGE_ERROR)
+        if get_time() - spawnStart > 1 then
+            log_to_console(tostring("Character Select Nuzlocke: Character took 1 Seconds after "..tostring(spawnIteration).." iterations, got stuck on Step "..tostring(spawnStep)..", giving up."), CONSOLE_MESSAGE_ERROR)
             return {x = 0, y = 0, z = 0, yaw = 0}
         end
     end
@@ -739,66 +771,52 @@ local function find_character_spawn()
 end
 
 local function find_griffiti_spawn()
+    if #surfaceList == 0 then return end
     local spawnPos = nil
     local spawnStart = get_time()
     local spawnIteration = 0
     while spawnPos == nil do
         local spawnStep = 0
         spawnIteration = spawnIteration + 1
-        local ray = collision_find_surface_on_ray(mul_random(levelMinX, levelMaxX), 0x4000, mul_random(levelMinZ, levelMaxZ), 0, -0x8000, 0, 1)
-        if ray.surface and not evilFloorTypes[ray.surface.type] and ray.surface.normal.y > 0.95 and (ray.hitPos.y > find_water_level(ray.hitPos.x, ray.hitPos.z) or spawnIteration > 1000) then
+        local randSurface = mul_random(1, #surfaceList)
+        local surfaceData = surfaceList[randSurface]
+        if surfaceData and (surfaceData.normalY < 0.5 and surfaceData.normalY > -0.5) and (find_water_level(surfaceData.posX, surfaceData.posZ) - 100 < surfaceData.posY or spawnIteration > 1000) then
             spawnStep = spawnStep + 1
-            local surfaceX, surfaceY, surfaceZ = get_surface_center(ray.surface)
 
-            local angleYaw = mul_random(0, 0x10000)
-            local canSpawnFloor = mul_random() <= 0.02
-            if not canSpawnFloor then
-                ray = collision_find_surface_on_ray(surfaceX, surfaceY + 100, surfaceZ, sins(angleYaw)*5000, mul_random()*1000, coss(angleYaw)*5000)
+            local avoidDist = 0x8000
+            for _, bhvId in pairs(avoidBhvs) do
+                local o = nearest_object_with_behavior_id_to_pos(bhvId, surfaceData.posX, surfaceData.posY, surfaceData.posZ)
+                if o then
+                    avoidDist = math.min(avoidDist, dist_between_object_and_point(o, surfaceData.posX, surfaceData.posY, surfaceData.posZ))
+                end
             end
-            if ray.surface ~= nil and not evilFloorTypes[ray.surface.type] and ((ray.surface.normal.y < 0.75 and ray.surface.normal.y > -0.75) or canSpawnFloor) then
-                local smallestEdge = nil
-                for i = 0, 6 do
-                    local currNum = (i%3) + 1
-                    local nextNum = ((i+1)%3) + 1
-                    local currPos = ray.surface["vertex"..tostring(currNum)]
-                    local nextPos = ray.surface["vertex"..tostring(nextNum)]
-                    if i > 2 then
-                        local nextNum2 = ((i+2)%3) + 1
-                        nextPos = {
-                            x = (ray.surface["vertex"..tostring(nextNum)].x + ray.surface["vertex"..tostring(nextNum2)].x)*0.5,
-                            y = (ray.surface["vertex"..tostring(nextNum)].y + ray.surface["vertex"..tostring(nextNum2)].y)*0.5,
-                            z = (ray.surface["vertex"..tostring(nextNum)].z + ray.surface["vertex"..tostring(nextNum2)].z)*0.5,
-                        }
-                    end
-                    local edgeDist = math.sqrt((currPos.x - nextPos.x)^2 + (currPos.y - nextPos.y)^2 + (currPos.z - nextPos.z)^2)
-                    if not smallestEdge or smallestEdge > edgeDist then
-                        smallestEdge = edgeDist
-                    end
-                end
 
-                local spawnX, spawnY, spawnZ = get_surface_center(ray.surface)
-                local avoidGraffiti = nearest_object_with_behavior_id_to_pos(spawnX, spawnY, spawnZ, id_bhvCharGraffiti)
-                local behindWarp = false
-                for i = 0, 3 do
-                    if instantWarps[i] then
-                        local angle = atan2s(spawnZ - instantWarps[i].startZ, spawnX - instantWarps[i].startX)
-                        local angleDiff = math.s16(angle - instantWarps[i].angle)
-                        if angleDiff > -0x6000 and angleDiff < 0x6000 then
-                            -- Fine to spawn
-                        else
-                            behindWarp = true
-                        end
+            local behindWarp = false
+            for i = 0, 3 do
+                if instantWarps[i] then
+                    local angle = atan2s(surfaceData.posZ - (instantWarps[i].startZ + coss(instantWarps[i].angle)*500), surfaceData.posX - (instantWarps[i].startX + sins(instantWarps[i].angle)*500))
+                    local angleDiff = math.s16(angle - instantWarps[i].angle)
+                    if angleDiff > -0x6000 and angleDiff < 0x6000 then
+                        -- Fine to spawn
+                    else
+                        behindWarp = true
                     end
                 end
-                if not behindWarp and smallestEdge > 300 and ((not avoidGraffiti or dist_between_object_and_point(avoidGraffiti, spawnX, spawnY, spawnZ) > 100) or spawnIteration > 1000) then
-                    spawnPos = {
-                        x = spawnX,
-                        y = spawnY,
-                        z = spawnZ,
-                        edge = smallestEdge,
-                        surface = ray.surface,
-                    }
-                end
+            end
+
+            local avoidGraffiti = nearest_object_with_behavior_id_to_pos(id_bhvCharGraffiti, surfaceData.posX, surfaceData.posY, surfaceData.posZ)
+            local minEdge = 600 - spawnIteration*0.1
+            if not behindWarp and surfaceData.surface and surfaceData.smallEdge > minEdge and ((not avoidGraffiti or dist_between_object_and_point(avoidGraffiti, surfaceData.posX, surfaceData.posY, surfaceData.posZ) > minEdge*1.5) or spawnIteration > 1000) then
+                spawnPos = {
+                    x = surfaceData.posX,
+                    y = surfaceData.posY,
+                    z = surfaceData.posZ,
+                    edge = surfaceData.smallEdge,
+                    nX = surfaceData.normalX,
+                    nY = surfaceData.normalY,
+                    nZ = surfaceData.normalZ,
+                }
+                surfaceList[randSurface] = nil
             end
         end 
 
@@ -835,11 +853,17 @@ local function character_spawn_handler()
         end
         for i, areaData in pairs(charLevelMap[currLevel]) do
             for i, charNum in pairs(areaData) do
-                for i = 1, math.max(levelScale/4000) + mul_random(0, 2) do
+                for i = 1, math.max(levelScale/2000) + mul_random(0, 2) do
                     local graffitiSpawn = find_griffiti_spawn()
                     if graffitiSpawn then
                         spawn_sync_object(id_bhvCharGraffiti, E_MODEL_GRAFFITI, graffitiSpawn.x, graffitiSpawn.y, graffitiSpawn.z, function(o)
-                            o.oFloor = graffitiSpawn.surface
+                            o.oFloor = collision_find_surface_on_ray(
+                                graffitiSpawn.x - graffitiSpawn.nX*5,
+                                graffitiSpawn.y - graffitiSpawn.nY*5,
+                                graffitiSpawn.z - graffitiSpawn.nZ*5,
+                                graffitiSpawn.nX*10,
+                                graffitiSpawn.nY*10,
+                                graffitiSpawn.nZ*10, 1).surface
                             bhv_char_graffiti_loop(o)
                             obj_scale(o, math.clamp(graffitiSpawn.edge/350, 0.5, 5))
                             o.oAnimState = charNum
@@ -853,6 +877,7 @@ end
 
 local function on_sync()
     character_spawn_handler()
+    surfaceList = {}
     instantWarps[0] = nil
     instantWarps[1] = nil
     instantWarps[2] = nil
