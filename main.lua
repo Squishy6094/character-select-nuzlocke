@@ -198,8 +198,10 @@ local function reset_characters()
     map_characters()
 end
 
+local queueKill = -1
+local isDying = false
 local function randomize_character()
-    if #charTable > 0 and gGlobalSyncTable.nuzMixupMode ~= 0 then
+    if #charTable > 0 and (gGlobalSyncTable.nuzMixupMode ~= 0 or queueKill ~= -1) then
         local charNum = CT_MARIO
         if nuzlocke_count_character_state(NUZLOCKE_CHAR_UNLOCKED) > 0 then
             repeat
@@ -212,8 +214,6 @@ local function randomize_character()
     end
 end
 
-local queueKill = -1
-local isDying = false
 local function queue_char_kill()
 	queueKill = charSelect.character_get_current_number(0) or 0
     isDying = true
@@ -289,8 +289,8 @@ local function update()
             nuzlocke_set_character_state(queueKill, NUZLOCKE_CHAR_DIED)
             local charData = charTable[queueKill][1]
             djui_popup_create_global("Character Select Nuzlocke:\n"..color_to_string(charData.color.r*0.5 + 127, charData.color.g*0.5 + 127, charData.color.b*0.5 + 127)..charData.name.."\\#dcdcdc\\ was lost by "..network_get_player_text_color_string(0)..gNetworkPlayers[0].name, 2)
-            queueKill = -1
             randomize_character()
+            queueKill = -1
         end
     else
         isDying = false
@@ -554,87 +554,33 @@ end
 
 hook_event(HOOK_ON_OBJECT_UNLOAD, obj_unload)
 
-local levelMinX = -0x4000
-local levelMaxX = 0x4000
-local levelMinZ = -0x4000
-local levelMaxZ = 0x4000
-local checkCount = 10
 local instantWarps = {
     [0] = nil,
     [1] = nil,
     [2] = nil,
     [3] = nil,
 }
-local function find_level_bounds()
-    levelMinX = -0x4000
-    levelMaxX = 0x4000
-    levelMinZ = -0x4000
-    levelMaxZ = 0x4000
 
-    -- Min X Pos
-    local dist = nil
-    for distMult = 16, 0, -1 do
-        if not dist then
-            for i = -checkCount, checkCount do
-                local ray = collision_find_surface_on_ray(levelMinX*(distMult/16), 0x4000, 0x4000*(i/checkCount), 0, -0x8000, 0, 1)
-                if ray.surface ~= nil then
-                    dist = ray.hitPos.x
-                end
-            end
-        end
-    end
-    levelMinX = dist and math.round(dist) or levelMinX
-    
-    -- Max X Pos
-    local dist = nil
-    for distMult = 16, 0, -1 do
-        if not dist then
-            for i = -checkCount, checkCount do
-                local ray = collision_find_surface_on_ray(levelMaxX*(distMult/16), 0x4000, 0x4000*(i/checkCount), 0, -0x8000, 0, 1)
-                if ray.surface ~= nil then
-                    dist = ray.hitPos.x
-                end
-            end
-        end
-    end
-    levelMaxX = dist and math.round(dist) or levelMaxX
-
-
-    -- Min Z Pos
-    local dist = nil
-    for distMult = 16, 0, -1 do
-        if not dist then
-            for i = -checkCount, checkCount do
-                local ray = collision_find_surface_on_ray(0x4000*(i/checkCount), 0x4000, levelMinZ*(distMult/16), 0, -0x8000, 0, 1)
-                if ray.surface ~= nil then
-                    dist = ray.hitPos.z
-                end
-            end
-        end
-    end
-    levelMinZ = dist and math.round(dist) or levelMinZ
-    
-    -- Max Z Pos
-    local dist = nil
-    for distMult = 16, 0, -1 do
-        if not dist then
-            for i = -checkCount, checkCount do
-                local ray = collision_find_surface_on_ray(0x4000*(i/checkCount), 0x4000, levelMaxZ*(distMult/16), 0, -0x8000, 0, 1)
-                if ray.surface ~= nil then
-                    dist = ray.hitPos.z
-                end
-            end
-        end
-    end
-    levelMaxZ = dist and math.round(dist) or levelMaxZ
-
-    return math.sqrt(levelMinX^2 + levelMaxX^2 + levelMinZ^2 + levelMaxZ^2)
-end
-
-local surfaceList = {}
+local surfaceListChar = {}
+local surfaceListGraffiti = {}
+local prevLevel = 0
 ---@param surface Surface
-local function find_instant_warps(surface, dynamic)
+local function add_surface(surface, dynamic)
     if dynamic then return end
+    if evilFloorTypes[surface.type] then return end
+
+    local currLevel = gNetworkPlayers[0].currLevelNum*7 + gNetworkPlayers[0].currAreaIndex
+    if prevLevel ~= currLevel then
+        log_to_console("-----")
+        surfaceListChar = {}
+        surfaceListGraffiti = {}
+        instantWarps[0] = nil
+        instantWarps[1] = nil
+        instantWarps[2] = nil
+        instantWarps[3] = nil
+        prevLevel = currLevel
+    end
+
     local index = surface.type - SURFACE_INSTANT_WARP_1B;
     if (index >= INSTANT_WARP_INDEX_START and index < INSTANT_WARP_INDEX_STOP) and not instantWarps[index] then
         local warp = get_instant_warp(index)
@@ -648,10 +594,6 @@ local function find_instant_warps(surface, dynamic)
             }
         end
     end
-
-    local surfaceX = (surface.vertex1.x + surface.vertex2.x + surface.vertex3.x)/3
-    local surfaceY = (surface.vertex1.y + surface.vertex2.y + surface.vertex3.y)/3
-    local surfaceZ = (surface.vertex1.z + surface.vertex2.z + surface.vertex3.z)/3
 
     local smallestEdge = nil
     for i = 0, 6 do
@@ -672,21 +614,30 @@ local function find_instant_warps(surface, dynamic)
             smallestEdge = edgeDist
         end
     end
-    
-    if not evilFloorTypes[surface.type] then
-        table.insert(surfaceList, {
-            posX = surfaceX,
-            posY = surfaceY,
-            posZ = surfaceZ,
-            normalX = surface.normal.x,
-            normalY = surface.normal.y,
-            normalZ = surface.normal.z,
-            smallEdge = smallestEdge,
-            type = surface.type,
-            surface = surface
-        })
+
+    local list = nil 
+    if surface.normal.y > 0.9 and smallestEdge < 1000 then
+        list = surfaceListChar
+    elseif surface.normal.y < 0.5 and smallestEdge > 500 then
+        list = surfaceListGraffiti
+    else
+        return
     end
 
+    local surfaceX = (surface.vertex1.x + surface.vertex2.x + surface.vertex3.x)/3
+    local surfaceY = (surface.vertex1.y + surface.vertex2.y + surface.vertex3.y)/3
+    local surfaceZ = (surface.vertex1.z + surface.vertex2.z + surface.vertex3.z)/3
+    
+    table.insert(list, {
+        posX = surfaceX,
+        posY = surfaceY,
+        posZ = surfaceZ,
+        normalX = surface.normal.x,
+        normalY = surface.normal.y,
+        normalZ = surface.normal.z,
+        smallEdge = smallestEdge,
+        type = surface.type,
+    })
 end
 
 local avoidBhvs = {
@@ -701,11 +652,10 @@ local function find_character_spawn()
     local spawnPos = nil
     local spawnStart = get_time()
     local spawnIteration = 0
-    djui_chat_message_create(tostring(#surfaceList))
     while spawnPos == nil do
         local spawnStep = 0
         spawnIteration = spawnIteration + 1
-        local surfaceData = surfaceList[mul_random(1, #surfaceList)]
+        local surfaceData = surfaceListChar[mul_random(1, #surfaceListChar)]
         if surfaceData and surfaceData.normalY > 0.95 and (find_water_level(surfaceData.posX, surfaceData.posZ) - 100 < surfaceData.posY or spawnIteration > 1000) then
             spawnStep = spawnStep + 1
 
@@ -730,7 +680,7 @@ local function find_character_spawn()
                 end
             end
 
-            if not behindWarp and (avoidDist > 100 or spawnIteration > 5000) and (surfaceData.smallEdge > 100 and surfaceData.smallEdge < (500 + spawnIteration)) then
+            if not behindWarp and (avoidDist > 300 or spawnIteration > 5000) and (surfaceData.smallEdge > 100 and surfaceData.smallEdge < (500 + spawnIteration)) then
                 local outofBounds = false
                 for i = 0, 7 do
                     if not outofBounds then
@@ -771,16 +721,16 @@ local function find_character_spawn()
 end
 
 local function find_griffiti_spawn()
-    if #surfaceList == 0 then return end
+    if #surfaceListGraffiti == 0 then return end
     local spawnPos = nil
     local spawnStart = get_time()
     local spawnIteration = 0
     while spawnPos == nil do
         local spawnStep = 0
         spawnIteration = spawnIteration + 1
-        local randSurface = mul_random(1, #surfaceList)
-        local surfaceData = surfaceList[randSurface]
-        if surfaceData and (surfaceData.normalY < 0.5 and surfaceData.normalY > -0.5) and (find_water_level(surfaceData.posX, surfaceData.posZ) - 100 < surfaceData.posY or spawnIteration > 1000) then
+        local randSurface = mul_random(1, #surfaceListGraffiti)
+        local surfaceData = surfaceListGraffiti[randSurface]
+        if surfaceData and (find_water_level(surfaceData.posX, surfaceData.posZ) - 100 < surfaceData.posY or spawnIteration > 100) then
             spawnStep = spawnStep + 1
 
             local avoidDist = 0x8000
@@ -791,6 +741,7 @@ local function find_griffiti_spawn()
                 end
             end
 
+            spawnStep = spawnStep + 1
             local behindWarp = false
             for i = 0, 3 do
                 if instantWarps[i] then
@@ -804,9 +755,8 @@ local function find_griffiti_spawn()
                 end
             end
 
-            local avoidGraffiti = nearest_object_with_behavior_id_to_pos(id_bhvCharGraffiti, surfaceData.posX, surfaceData.posY, surfaceData.posZ)
-            local minEdge = 600 - spawnIteration*0.1
-            if not behindWarp and surfaceData.surface and surfaceData.smallEdge > minEdge and ((not avoidGraffiti or dist_between_object_and_point(avoidGraffiti, surfaceData.posX, surfaceData.posY, surfaceData.posZ) > minEdge*1.5) or spawnIteration > 1000) then
+            spawnStep = spawnStep + 1
+            if not behindWarp then
                 spawnPos = {
                     x = surfaceData.posX,
                     y = surfaceData.posY,
@@ -816,7 +766,7 @@ local function find_griffiti_spawn()
                     nY = surfaceData.normalY,
                     nZ = surfaceData.normalZ,
                 }
-                surfaceList[randSurface] = nil
+                surfaceListGraffiti[randSurface] = nil
             end
         end 
 
@@ -841,7 +791,6 @@ local function character_spawn_handler()
     -- Don't run if someone else ran it already
     if obj_get_first_with_behavior_id(id_bhvUnlockableChar) then return end
     if obj_get_first_with_behavior_id(id_bhvCharGraffiti) then return end
-    local levelScale = find_level_bounds()
     if nuzlocke_seed_rng(currLevel*currArea) then
         for i, charNum in pairs(charLevelMap[currLevel][currArea]) do
             local charSpawn = find_character_spawn()
@@ -853,7 +802,7 @@ local function character_spawn_handler()
         end
         for i, areaData in pairs(charLevelMap[currLevel]) do
             for i, charNum in pairs(areaData) do
-                for i = 1, math.max(levelScale/2000) + mul_random(0, 2) do
+                for i = 1, mul_random(10, 15) do
                     local graffitiSpawn = find_griffiti_spawn()
                     if graffitiSpawn then
                         spawn_sync_object(id_bhvCharGraffiti, E_MODEL_GRAFFITI, graffitiSpawn.x, graffitiSpawn.y, graffitiSpawn.z, function(o)
@@ -865,7 +814,7 @@ local function character_spawn_handler()
                                 graffitiSpawn.nY*10,
                                 graffitiSpawn.nZ*10, 1).surface
                             bhv_char_graffiti_loop(o)
-                            obj_scale(o, math.clamp(graffitiSpawn.edge/350, 0.5, 5))
+                            obj_scale(o, graffitiSpawn.edge/350)
                             o.oAnimState = charNum
                         end)
                     end
@@ -877,11 +826,6 @@ end
 
 local function on_sync()
     character_spawn_handler()
-    surfaceList = {}
-    instantWarps[0] = nil
-    instantWarps[1] = nil
-    instantWarps[2] = nil
-    instantWarps[3] = nil
     local m = gMarioStates[0] ---@type MarioState
     local floorHeight = find_floor(m.spawnInfo.startPos.x, m.spawnInfo.startPos.y, m.spawnInfo.startPos.z)
     spawnPos.x = m.spawnInfo.startPos.x
@@ -910,7 +854,7 @@ hook_event(HOOK_MARIO_UPDATE, set_lives_counter)
 hook_event(HOOK_ON_PACKET_RECEIVE, on_packet_recieve)
 hook_event(HOOK_ON_LEVEL_INIT, randomize_character)
 hook_event(HOOK_ON_INTERACT, on_interact)
-hook_event(HOOK_ON_ADD_SURFACE, find_instant_warps)
+hook_event(HOOK_ON_ADD_SURFACE, add_surface)
 _G.charSelect.hook_allow_menu_open(block_menu_in_stages)
 
 local function set_seed(msg)

@@ -121,8 +121,8 @@ evilFloorTypes = {
     [SURFACE_HORIZONTAL_WIND] = true,
     [SURFACE_WARP] = true,
     [SURFACE_WOBBLING_WARP] = true,
-    [SURFACE_PAINTING_WARP_D3] = true,
 
+    --[[
     [SURFACE_PAINTING_WARP_D3] = true,
     [SURFACE_PAINTING_WARP_D4] = true,
     [SURFACE_PAINTING_WARP_D5] = true,
@@ -166,6 +166,7 @@ evilFloorTypes = {
     [SURFACE_PAINTING_WARP_FB] = true,
     [SURFACE_PAINTING_WARP_FC] = true,
     [SURFACE_WOBBLING_WARP] = true,
+    ]]
 }
 
 function nearest_object_with_behavior_id_to_pos(x, y, z, bhvId)
